@@ -23,7 +23,15 @@ if command -v udevadm >/dev/null && udevadm verify --help >/dev/null 2>&1; then
   udevadm verify --no-style "$rule" >/dev/null || fail 'udevadm accepts the rule'
   pass 'udevadm accepts the Touch ID rule'
 fi
+# Verified inside the staged root, whose stub commands stand in for the
+# runtime's platform check, so the result never depends on the host.
 if command -v systemd-analyze >/dev/null; then
-  systemd-analyze verify --man=no "$unit" 2>"$work/verify" || fail 'systemd accepts the unit' "$(cat "$work/verify")"
+  mkdir -p "$work/root/usr/bin"
+  for command in omarchy-hw-apple-silicon true; do
+    printf '#!/bin/sh\nexit 0\n' >"$work/root/usr/bin/$command"
+    chmod +x "$work/root/usr/bin/$command"
+  done
+  systemd-analyze --root="$work/root" verify --man=no /usr/lib/systemd/system/omarchy-mac-touchid-activate.service 2>"$work/verify" ||
+    fail 'systemd accepts the unit' "$(cat "$work/verify")"
   pass 'systemd accepts the Touch ID unit'
 fi

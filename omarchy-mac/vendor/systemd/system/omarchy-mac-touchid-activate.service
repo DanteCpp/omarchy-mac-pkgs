@@ -1,0 +1,13 @@
+# Touch ID activates on the first open of /dev/sep-bio and only then reads
+# "ready" in diag/touchid, which omarchy-hw-fingerprint checks. Opening it once
+# when it appears lets Omarchy find the reader before anything has used it.
+[Unit]
+Description=Activate Touch ID
+ConditionPathExists=/dev/sep-bio
+
+[Service]
+Type=oneshot
+ExecCondition=/usr/bin/omarchy-hw-apple-silicon
+StandardInput=file:/dev/sep-bio
+StandardOutput=journal
+ExecStart=/usr/bin/true

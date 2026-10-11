@@ -18,7 +18,9 @@ cmp -s "$work/fresh/etc/mpv/mpv.conf" "$work/fresh/usr/share/omarchy-mac/mpv/mpv
   fail 'mpv asks AVD only for the codecs it decodes' "$(setting "$work/fresh" hwdec-codecs)"
 [[ $(setting "$work/fresh" vo) == "gpu" && $(setting "$work/fresh" gpu-api) == "opengl" ]] ||
   fail 'mpv draws copied frames with the OpenGL renderer'
-pass 'a fresh install decodes H.264, HEVC and VP9 on AVD in mpv, with copy-back and OpenGL'
+[[ $(setting "$work/fresh" gpu-sw) == "yes" ]] ||
+  fail 'mpv draws in software on a Mac whose GPU has no driver yet' "$(setting "$work/fresh" gpu-sw)"
+pass 'a fresh install decodes H.264, HEVC and VP9 on AVD in mpv, with copy-back and OpenGL, and draws in software without a GPU driver'
 
 # An upgraded Mac already has /etc/mpv from mpv-mpris.
 "$ROOT"/install "$work/upgrade"

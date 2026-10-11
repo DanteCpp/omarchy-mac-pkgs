@@ -1,6 +1,6 @@
 # omarchy-mac
 
-Apple Silicon defaults and support services for Omarchy. Version: `0.1.3` (candidate). This add-on complements `omarchy` and `omarchy-settings`; it selects no kernel and contains no installer or repository trust configuration. It covers what stays on an installed Mac; installing one is the job of the [Omarchy Installer](https://github.com/omacom/omarchy-mac-installer), and boot support is the separate `omarchy-mac-boot` package beside this one.
+Apple Silicon defaults and support services for Omarchy. Version: `0.1.4` (candidate). This add-on complements `omarchy` and `omarchy-settings`; it selects no kernel and contains no installer or repository trust configuration. It covers what stays on an installed Mac; installing one is the job of the [Omarchy Installer](https://github.com/omacom/omarchy-mac-installer), and boot support is the separate `omarchy-mac-boot` package beside this one.
 
 ## Build and stage
 
@@ -43,6 +43,8 @@ Vendor defaults use NetworkManager's `/usr/lib/NetworkManager/conf.d`, systemd's
 mpv has no vendor configuration directory and decodes in software unless told otherwise. The package ships its Apple default as `/usr/share/omarchy-mac/mpv/mpv.conf` and a systemd-tmpfiles rule that copies it to `/etc/mpv/mpv.conf` only when that file is missing. pacman's systemd hook applies the rule when the package is installed or upgraded, and boot applies it again. An existing `/etc/mpv/mpv.conf` is never overwritten, so edit it rather than delete it to change the system default; each user's `~/.config/mpv/mpv.conf` is read after it and wins, and `hwdec=no` there decodes in software.
 
 The default decodes H.264, HEVC and VP9 on the Apple Video Decoder with copy-back (`hwdec=vaapi-copy`, `hwdec-codecs=h264,hevc,vp9`) and draws with the OpenGL renderer (`vo=gpu`, `gpu-api=opengl`). On an M2 Max, copy-back is bit-exact against software decoding, and 1080p playback falls from about 55% to 13% of a core. Zero-copy (`hwdec=vaapi`) is not used: Asahi's Vulkan driver reads the imported chroma plane from the wrong offset, so gpu-next shows green frames, and `libva-v4l2_request` invalidates the frames of a decoder it closes, which copy-back has already copied out. gpu-next also costs about three times the CPU of OpenGL to upload copied frames. `libva-v4l2_request-avd` and `avd-fw` provide the decoder; without them mpv falls back to software.
+
+On a Mac whose GPU has no driver yet, such as the M3 Max, the only OpenGL renderer is llvmpipe. mpv rejects a software renderer while probing, and mpv 0.41 then aborts with `vo_x11_init: Assertion '!vo->x11' failed`: its Wayland context does not clean up after a failed init, and the X11 context it tries next asserts on the leftover (fixed upstream in mpv-player/mpv@a58dd8ac41, not yet in a release). `gpu-sw=yes` lets mpv draw on llvmpipe there instead. It changes nothing on a Mac with a working GPU, whose hardware renderer is accepted before any software one is considered.
 
 ## Battery charge limit
 

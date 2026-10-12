@@ -747,8 +747,11 @@ class Subscription:
 
     def wait(self, limit=None):
         # True: only the mapping's gain or mute may have changed.
-        if self.process is None and not self.start():
-            time.sleep(self.retry)
+        # A full pass follows every subscription, so a device that appeared
+        # while nothing listened (the DSP at login) is still mapped.
+        if self.process is None:
+            if not self.start():
+                time.sleep(self.retry)
             return self.full()
         started = time.monotonic()
         hard = self.last_full + self.backstop if limit is None else min(self.last_full + self.backstop, started + limit)
@@ -787,6 +790,7 @@ class Subscription:
 def supervise(operation, wait=None):
     subscription = Subscription() if wait is None else None
     if subscription is not None:
+        subscription.start()
         wait = lambda: subscription.wait(outage_due())
     previous_error = None
     save_only = False

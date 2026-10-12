@@ -591,8 +591,9 @@ with tempfile.TemporaryDirectory() as temporary:
     # The watcher sleeps on pactl events instead of polling: device events wake
     # it once they settle, application and stream events never do, a steady
     # stream cannot starve repair, and a lost subscription still yields one.
-    def feed(script):
-        return m.Subscription(command=['bash', '-c', script], quiet=0.1, settle=1.0, backstop=0.6, retry=0.05)
+    def feed(script, **options):
+        sub = m.Subscription(command=['bash', '-c', script], **dict(dict(quiet=0.1, settle=1.0, backstop=0.6, retry=0.05), **options))
+        sub.start(); sub.last_full = time.monotonic(); return sub
     def timed(sub):
         start = time.monotonic(); sub.wait(); elapsed = time.monotonic() - start; sub.stop(); return elapsed
     elapsed = timed(feed("echo \"Event 'new' on source #7\"; sleep 3"))
@@ -636,6 +637,23 @@ with tempfile.TemporaryDirectory() as temporary:
     sub = feed('exit 0'); elapsed = timed(sub)
     assert elapsed < 0.5 and sub.process is None, 'a lost subscription must yield a repair and resubscribe later'
     assert timed(m.Subscription(command=['/nonexistent/pactl'], retry=0.05)) < 0.5, 'a missing subscriber must degrade to a paced retry'
+    # A device that appears while nothing listens (the DSP at login, or after
+    # pipewire-pulse restarts) is mapped: the supervisor subscribes before its
+    # first pass, and every resubscription is followed by a pass at once.
+    sub = m.Subscription(command=['bash', '-c', "sleep 3; echo \"Event 'new' on source #7\""], backstop=60.0, retry=0.05)
+    start = time.monotonic(); result = sub.wait(); elapsed = time.monotonic() - start
+    assert result is False and elapsed < 0.5 and sub.process is not None, ('a new subscription is followed by a pass', result, elapsed)
+    sub.stop()
+    order = []
+    class Recorded:
+        def __init__(self, **options): order.append(('subscription', options.get('stale')))
+        def start(self): order.append('subscribe'); return True
+        def wait(self, limit=None): raise KeyboardInterrupt()
+        def stop(self): order.append('stop')
+    with mock.patch.object(m, 'Subscription', Recorded):
+        try: m.supervise(lambda save=False: order.append('pass'))
+        except KeyboardInterrupt: pass
+    assert order == [('subscription', None), 'subscribe', 'pass', 'stop'], order
 # The live probe reads float samples from the mapping through parec: any
 # non-zero sample, however quiet, is signal; zeros (either sign) are digital
 # silence; a recorder that yields nothing is unknown.
@@ -758,4 +776,5 @@ assert '--watch' in unit and 'PartOf=graphical-session.target' in unit
 assert 'PartOf=pipewire.service' not in unit and 'After=graphical-session.target' not in unit
 print('ok - transactional Asahi mapping preserves choices/gain, rolls back failures and recovers lifecycle loss')
 print('ok - the mapping is a typed stereo remap source that replaces the 0.1.2 virtual source on upgrade')
+print('ok - the watcher subscribes before each pass, so a DSP that appears late is mapped')
 PY

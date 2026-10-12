@@ -16,11 +16,12 @@ restart_old_mappers() {
   for runtime in "$root"/run/user/*; do
     uid=${runtime##*/}
     [[ $uid =~ ^[0-9]+$ && -S $runtime/systemd/private ]] || continue
-    user=$(id -nu "$uid" 2>/dev/null) || continue
+    user=$(timeout 5 id -nu "$uid" 2>/dev/null) || continue
     pid=$(timeout 10 systemctl --user --machine="$user@" show --property=MainPID --value "$unit" 2>/dev/null) || continue
     [[ $pid =~ ^[0-9]+$ ]] && (( pid > 0 )) || continue
     marker=$runtime/omarchy-asahi-mic.reloads
-    if [[ -f $marker && ! -L $marker && $(<"$marker") == "$pid" ]]; then
+    # The record is the user's file: read a few bytes, and never wait on it.
+    if [[ -f $marker && ! -L $marker && $(timeout 2 head -c 16 -- "$marker" 2>/dev/null) == "$pid" ]]; then
       continue
     fi
     echo "Restarting the microphone mapper of $user"

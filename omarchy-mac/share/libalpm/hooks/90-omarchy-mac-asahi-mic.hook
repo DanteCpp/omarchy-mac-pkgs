@@ -1,9 +1,0 @@
-[Trigger]
-Type = Path
-Operation = Upgrade
-Target = usr/bin/omarchy-audio-asahi-mic-map
-
-[Action]
-Description = Restarting microphone mappers that cannot reload themselves...
-When = PostTransaction
-Exec = /usr/lib/omarchy-mac/asahi-mic-restart

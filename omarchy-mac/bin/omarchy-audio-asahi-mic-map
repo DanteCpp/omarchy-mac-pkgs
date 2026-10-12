@@ -53,11 +53,9 @@ recheck = dict(at=None)
 # The mapping's Pulse index, so a change of its own gain or mute is saved.
 mapping_index = dict(value=None)
 # A package upgrade replaces this file under a running watcher, and pacman
-# restarts no user service: the watcher runs the new file itself, under the
-# same PID, which it records so the upgrade hook leaves it alone.
+# restarts no user service: the watcher runs the new file itself.
 PACMAN_LOCK = Path('/var/lib/pacman/db.lck')
 RELOAD = 'reload'
-RELOAD_MARKER = 'omarchy-asahi-mic.reloads'
 
 
 class Deferred(Exception):
@@ -923,12 +921,7 @@ def main():
     if args.watch:
         # Let a service stop unwind through supervise so the subscriber exits too.
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-        program = Program(os.path.abspath(sys.argv[0]))
-        try:
-            (runtime / RELOAD_MARKER).write_text(str(os.getpid()))
-        except OSError as error:
-            print('Could not record the microphone mapper: ' + str(error), file=sys.stderr, flush=True)
-        supervise(operation, program=program)
+        supervise(operation, program=Program(os.path.abspath(sys.argv[0])))
     else:
         try:
             operation()

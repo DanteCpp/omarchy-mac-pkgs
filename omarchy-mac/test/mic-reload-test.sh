@@ -24,8 +24,19 @@ chmod +x "$work/bin/"*
 # new file under its own PID with its arguments, and stops its subscriber.
 "$ROOT"/install "$work/root"
 mapper=$work/root/usr/bin/omarchy-audio-asahi-mic-map
-WORK=$work PATH="$work/bin:$PATH" XDG_RUNTIME_DIR="$work/run" XDG_STATE_HOME="$work/state" \
-  "$mapper" --watch 2>"$work/log" &
+# The host's pacman lock and audio session stay out of it.
+cat >"$work/watch.py" <<'WATCH'
+import importlib.machinery, importlib.util, sys
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader('mapper', sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+mapper = importlib.util.module_from_spec(spec); loader.exec_module(mapper)
+mapper.PACMAN_LOCK = Path(sys.argv[2])
+sys.argv = [sys.argv[1], '--watch']
+sys.exit(mapper.main())
+WATCH
+env -u PULSE_SERVER -u PIPEWIRE_REMOTE WORK="$work" PATH="$work/bin:$PATH" XDG_RUNTIME_DIR="$work/run" XDG_STATE_HOME="$work/state" \
+  python3 "$work/watch.py" "$mapper" "$work/db.lck" 2>"$work/log" &
 watcher=$!
 for _ in $(seq 100); do
   [[ -s $work/subscriber && -f $work/run/omarchy-asahi-mic.reloads ]] && break
@@ -36,7 +47,7 @@ subscriber=$(<"$work/subscriber")
 printf '#!/bin/bash\necho "$$ $*" >"$WORK/reloaded"\nexec sleep 60\n' >"$work/new"
 chmod +x "$work/new"
 mv "$work/new" "$mapper"
-for _ in $(seq 100); do
+for _ in $(seq 200); do
   [[ -s $work/reloaded ]] && break
   sleep 0.1
 done

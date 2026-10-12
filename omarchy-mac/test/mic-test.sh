@@ -665,9 +665,34 @@ with tempfile.TemporaryDirectory() as temporary:
         results.append(sub.wait())
         if results[-1] == m.RELOAD: break
     sub.stop(); m.mapping_index['value'] = None
-    assert results[-1] == m.RELOAD and len(looks) == 2 and time.monotonic() - start < 1.0, (results, looks)
+    assert results[-1] == m.RELOAD and len(looks) == 2 and time.monotonic() - start < 1.5, (results, looks)
     sub = feed('sleep 3', backstop=0.5, stale=lambda: False, poll=0.1)
     assert sub.wait() is False, 'an unchanged program never stops the wait'
+    sub.stop()
+    # The poll runs across waits: events that end each wait sooner than the
+    # poll interval never postpone it, nor does a subscriber that keeps dying.
+    looks = []
+    sub = feed("while true; do echo \"Event 'new' on sink #1\"; sleep 0.3; done", quiet=0.05, settle=0.1, backstop=60.0, stale=stale, poll=0.5)
+    results = []; start = time.monotonic()
+    while time.monotonic() - start < 3:
+        results.append(sub.wait())
+        if results[-1] == m.RELOAD: break
+    sub.stop()
+    assert results[-1] == m.RELOAD and False in results and time.monotonic() - start < 2.0, (results, looks)
+    looks = []
+    sub = m.Subscription(command=['bash', '-c', 'exit 0'], retry=0.05, stale=stale, poll=0.3)
+    results = []; start = time.monotonic()
+    while time.monotonic() - start < 3:
+        results.append(sub.wait())
+        if results[-1] == m.RELOAD: break
+    sub.stop()
+    assert results[-1] == m.RELOAD and time.monotonic() - start < 2.0, (results, looks)
+    # A moment after subscribing the watcher looks once more, for a device
+    # that appeared before pactl had registered its subscription.
+    sub = feed('sleep 5', backstop=60.0)
+    start = time.monotonic(); result = sub.wait(); elapsed = time.monotonic() - start
+    assert result is False and 0.8 <= elapsed < 1.5, ('a pass follows a moment after subscribing', elapsed)
+    start = time.monotonic(); sub.wait(0.3); assert time.monotonic() - start >= 0.3, 'only once'
     sub.stop()
     # On RELOAD the supervisor stops its subscriber and runs the new program;
     # if that cannot run, the old code carries on with a full pass.
@@ -688,37 +713,45 @@ with tempfile.TemporaryDirectory() as temporary:
         except KeyboardInterrupt: pass
     assert events[:4] == ['stop', 'run', 'stop', 'run'] and passes[:3] == [False, False, False], (events, passes)
 # The watcher's program counts as replaced once a different file is in place,
-# unchanged since the previous look, and no pacman transaction is running (or
-# its lock is a minute old). A missing or unrunnable file is never run.
+# unchanged since the previous look, and no pacman transaction is running (a
+# lock no pacman holds is stale). A missing or unrunnable file is never run,
+# and one that fails to run is tried again later, backing off.
 with tempfile.TemporaryDirectory() as temporary:
     directory = Path(temporary); path = directory / 'omarchy-audio-asahi-mic-map'; lock = directory / 'db.lck'
+    pacman = [True]
     def put(text, mode=0o755):
         new = directory / 'new'; new.write_text(text); new.chmod(mode); os.replace(new, path)
+    def watched(): return m.Program(path, lock=lock, running=lambda: pacman[0])
     put('old')
-    program = m.Program(path, lock=lock)
+    program = watched()
     assert not program.replaced() and not program.replaced(), 'the started program is current'
     put('new')
     assert not program.replaced(), 'a file just written may still be changing'
     assert program.replaced(), 'a replaced file unchanged since the previous look is run'
-    program = m.Program(path, lock=lock)
+    program = watched()
     put('newer'); lock.touch()
-    assert not program.replaced() and not program.replaced(), 'not while pacman holds its lock'
+    assert not program.replaced() and not program.replaced() and not program.replaced(), 'not while pacman holds its lock'
+    pacman[0] = False
+    assert program.replaced(), 'a lock no pacman holds is stale'
     lock.unlink()
-    assert program.replaced(), 'once the transaction ends'
-    program = m.Program(path, lock=lock, patience=0.0)
-    put('stale lock'); lock.touch()
-    assert not program.replaced() and program.replaced(), 'a lock pacman left behind delays the reload only so long'
-    lock.unlink()
-    program = m.Program(path, lock=lock)
+    program = watched()
     path.unlink()
     assert not program.replaced() and not program.replaced(), 'a removed program is not run'
     put('not executable', 0o644)
     assert not program.replaced() and not program.replaced(), 'an unrunnable program is not run'
-    with mock.patch.object(m.os, 'execv', side_effect=OSError('Exec format error')):
-        program = m.Program(path, lock=lock); put('broken')
+    clock = [1000.0]
+    with mock.patch.object(m.os, 'execv', side_effect=OSError('Text file busy')), mock.patch.object(m.time, 'monotonic', lambda: clock[0]):
+        program = watched(); put('busy')
         program.replaced(); assert program.replaced()
         program.run()
-        assert not program.replaced(), 'a program that would not run is not retried until it changes again'
+        assert not program.replaced(), 'a program that would not run waits out a back-off'
+        clock[0] += 2.0
+        assert program.replaced(), 'and is then tried again'
+        program.run(); clock[0] += 2.0
+        assert not program.replaced(), 'the back-off grows'
+        clock[0] += 2.0
+        assert program.replaced()
+assert m.Program(Path('/nonexistent')).lock == m.PACMAN_LOCK
 # The live probe reads float samples from the mapping through parec: any
 # non-zero sample, however quiet, is signal; zeros (either sign) are digital
 # silence; a recorder that yields nothing is unknown.

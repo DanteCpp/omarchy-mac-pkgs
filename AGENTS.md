@@ -18,7 +18,7 @@ CI rejects files outside these, the root documents and `.github/`.
 - `omarchy-mac-boot` covers what stays installed and runs again at updates. What runs once to install a Mac belongs in omacom/omarchy-mac-installer.
 - Change the manual in the same commit as the behaviour it describes.
 - A udev `add` action that must reach a device already present also gets a pacman hook that does that work on install and upgrade, since on the upgrade that installs the rule no `add` comes. The hook exits 0 in a chroot or an unbooted root, and never fails the transaction. An `add` that should only run when the device appears, such as one tied to the boot splash, does not.
-- An invitation is a prompt the runtime shows the owner once, such as the post-update offer to set up a newly found fingerprint reader. A change that makes one appear, such as a new `fingerprint-readers` entry, ships only after everything the invitation leads to is published to the repositories Macs update from. `omarchy-hw-fingerprint`, the runtime's detector, reads `fingerprint-readers`, a platform file omarchy-mac ships (#12).
+- An invitation is a prompt the runtime shows the owner once, such as the post-update offer to set up a newly found fingerprint reader. A change that makes one appear, such as a new `fingerprint-readers` entry, ships only after everything the invitation leads to is published to the repositories Macs update from. #12 adds `fingerprint-readers` to omarchy-mac's platform files, and omacom/omarchy#14675 teaches the runtime's detector, `omarchy-hw-fingerprint`, to read it.
 
 ## Tests
 

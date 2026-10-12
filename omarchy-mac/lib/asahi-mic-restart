@@ -1,0 +1,35 @@
+#!/bin/bash
+# After an upgrade replaces the microphone mapper, restart each user's running
+# mapper that predates self-reload (0.1.3 and earlier); newer ones record their
+# PID and run the new file themselves. Never fails the transaction.
+
+# Unprivileged tests stage the package under a fixture root; root never does.
+if (( EUID == 0 )); then
+  root=""
+else
+  root=${OMARCHY_MAC_ROOT:-}
+fi
+unit=omarchy-asahi-mic.service
+
+restart_old_mappers() {
+  local runtime uid user pid marker
+  for runtime in "$root"/run/user/*; do
+    uid=${runtime##*/}
+    [[ $uid =~ ^[0-9]+$ && -S $runtime/systemd/private ]] || continue
+    user=$(id -nu "$uid" 2>/dev/null) || continue
+    pid=$(timeout 10 systemctl --user --machine="$user@" show --property=MainPID --value "$unit" 2>/dev/null) || continue
+    [[ $pid =~ ^[0-9]+$ ]] && (( pid > 0 )) || continue
+    marker=$runtime/omarchy-asahi-mic.reloads
+    if [[ -f $marker && ! -L $marker && $(<"$marker") == "$pid" ]]; then
+      continue
+    fi
+    echo "Restarting the microphone mapper of $user"
+    timeout 10 systemctl --user --machine="$user@" --no-block try-restart "$unit" || true
+  done
+}
+
+# A chroot or an unbooted root has no user sessions.
+if omarchy-hw-apple-silicon 2>/dev/null && [[ -d $root/run/systemd/system ]] && ! systemd-detect-virt --chroot --quiet; then
+  restart_old_mappers
+fi
+exit 0

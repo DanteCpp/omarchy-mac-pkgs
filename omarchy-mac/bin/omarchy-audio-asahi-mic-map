@@ -52,6 +52,10 @@ outage = dict(since=None, notified=False, repaired=False)
 recheck = dict(at=None)
 # The mapping's Pulse index, so a change of its own gain or mute is saved.
 mapping_index = dict(value=None)
+# A package upgrade replaces this file under a running watcher, and pacman
+# restarts no user service: the watcher runs the new file itself.
+PACMAN_LOCK = Path('/var/lib/pacman/db.lck')
+RELOAD = 'reload'
 
 
 class Deferred(Exception):
@@ -688,6 +692,46 @@ def run_once(audio, runtime, state, save_only=False, checked=None):
         reconcile(audio, state, save_only, checked)
 
 
+class Program:
+    # The watcher's own file is replaced once it differs from the one started,
+    # is unchanged since the previous look and no pacman transaction (which may
+    # upgrade the interpreter too) holds the database, or a minute has passed.
+    def __init__(self, path, lock=PACMAN_LOCK, patience=60.0):
+        self.path = Path(path)
+        self.lock = Path(lock)
+        self.patience = patience
+        self.started = self.seen = self.signature()
+        self.since = time.monotonic()
+
+    def signature(self):
+        try:
+            status = os.stat(self.path)
+        except OSError:
+            return None
+        return status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns
+
+    def replaced(self):
+        current = self.signature()
+        previous, self.seen = self.seen, current
+        if current is None or current == self.started:
+            return False
+        if current != previous:
+            self.since = time.monotonic()
+            return False
+        if self.lock.exists() and time.monotonic() - self.since < self.patience:
+            return False
+        return os.access(self.path, os.X_OK)
+
+    def run(self):
+        # Returns only when the new file cannot be run; the old code goes on.
+        print('Running the updated microphone mapper', file=sys.stderr, flush=True)
+        try:
+            os.execv(self.path, [str(self.path), *sys.argv[1:]])
+        except OSError as error:
+            print('Could not run the updated microphone mapper: ' + str(error), file=sys.stderr, flush=True)
+            self.started = self.signature()
+
+
 class Subscription:
     # Wakes the supervisor when the mapping may need repair: a sink, source,
     # card or module appeared or vanished, a card or module changed, or the
@@ -703,9 +747,11 @@ class Subscription:
     EVENT = re.compile(rb"^Event '(new|remove)' on (sink|source|card|module) #|^Event 'change' on (card|module|server) #")
     SOURCE_CHANGE = re.compile(rb"^Event 'change' on source #([0-9]+)$")
 
-    def __init__(self, command=('pactl', 'subscribe'), quiet=0.5, settle=5.0, backstop=600.0, retry=2.0):
+    def __init__(self, command=('pactl', 'subscribe'), quiet=0.5, settle=5.0, backstop=600.0, retry=2.0, stale=None, poll=2.0):
         self.command = list(command)
         self.quiet, self.settle, self.backstop, self.retry = quiet, settle, backstop, retry
+        # stale() is asked every poll seconds whether to stop for RELOAD.
+        self.stale, self.poll = stale, poll
         self.process = None
         self.buffer = b''
         # Save-only wakes never reset the backstop, or a busy microphone
@@ -746,7 +792,8 @@ class Subscription:
         return False
 
     def wait(self, limit=None):
-        # True: only the mapping's gain or mute may have changed.
+        # True: only the mapping's gain or mute may have changed. RELOAD: the
+        # watcher's program was replaced.
         # A full pass follows every subscription, so a device that appeared
         # while nothing listened (the DSP at login) is still mapped.
         if self.process is None:
@@ -758,10 +805,18 @@ class Subscription:
         due = None
         latest = None
         repair = False
+        poll = None if self.stale is None else started + self.poll
         while True:
             now = time.monotonic()
+            if poll is not None and now >= poll:
+                if self.stale():
+                    return RELOAD
+                poll = now + self.poll
             deadline = hard if due is None else min(due, latest) if repair else min(due, latest, hard)
-            if deadline <= now or not select.select([self.process.stdout], [], [], deadline - now)[0]:
+            wake = deadline if poll is None else min(deadline, poll)
+            if wake <= now or not select.select([self.process.stdout], [], [], wake - now)[0]:
+                if time.monotonic() < deadline:
+                    continue
                 if due is None or repair or time.monotonic() >= hard:
                     return self.full()
                 return True
@@ -787,9 +842,10 @@ class Subscription:
                     latest = now + self.settle
 
 
-def supervise(operation, wait=None):
-    subscription = Subscription() if wait is None else None
-    if subscription is not None:
+def supervise(operation, wait=None, program=None):
+    subscription = None
+    if wait is None:
+        subscription = Subscription(stale=None if program is None else program.replaced)
         subscription.start()
         wait = lambda: subscription.wait(outage_due())
     previous_error = None
@@ -807,7 +863,14 @@ def supervise(operation, wait=None):
                 if message != previous_error:
                     print(message, file=sys.stderr, flush=True)
                     previous_error = message
-            save_only = bool(wait())
+            result = wait()
+            if result == RELOAD:
+                if subscription is not None:
+                    subscription.stop()
+                program.run()
+                save_only = False
+            else:
+                save_only = bool(result)
     finally:
         if subscription is not None:
             subscription.stop()
@@ -829,7 +892,7 @@ def main():
     if args.watch:
         # Let a service stop unwind through supervise so the subscriber exits too.
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-        supervise(operation)
+        supervise(operation, program=Program(os.path.abspath(sys.argv[0])))
     else:
         try:
             operation()

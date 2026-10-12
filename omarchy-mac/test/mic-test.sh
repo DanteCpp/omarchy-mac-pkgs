@@ -654,6 +654,71 @@ with tempfile.TemporaryDirectory() as temporary:
         try: m.supervise(lambda save=False: order.append('pass'))
         except KeyboardInterrupt: pass
     assert order == [('subscription', None), 'subscribe', 'pass', 'stop'], order
+    # A replaced program is noticed while events keep arriving, and only then.
+    looks = []
+    def stale():
+        looks.append(time.monotonic()); return len(looks) >= 2
+    sub = feed("while true; do echo \"Event 'change' on source #5\"; sleep 0.05; done", backstop=60.0, stale=stale, poll=0.2)
+    m.mapping_index['value'] = '5'
+    results = []; start = time.monotonic()
+    while time.monotonic() - start < 2:
+        results.append(sub.wait())
+        if results[-1] == m.RELOAD: break
+    sub.stop(); m.mapping_index['value'] = None
+    assert results[-1] == m.RELOAD and len(looks) == 2 and time.monotonic() - start < 1.0, (results, looks)
+    sub = feed('sleep 3', backstop=0.5, stale=lambda: False, poll=0.1)
+    assert sub.wait() is False, 'an unchanged program never stops the wait'
+    sub.stop()
+    # On RELOAD the supervisor stops its subscriber and runs the new program;
+    # if that cannot run, the old code carries on with a full pass.
+    events = []
+    class Replaced:
+        def replaced(self): return False
+        def run(self): events.append('run')
+    class Watched:
+        def __init__(self, **options): pass
+        def start(self): return True
+        def wait(self, limit=None):
+            if len(events) > 3: raise KeyboardInterrupt()
+            return m.RELOAD
+        def stop(self): events.append('stop')
+    passes = []
+    with mock.patch.object(m, 'Subscription', Watched):
+        try: m.supervise(lambda save=False: passes.append(save), program=Replaced())
+        except KeyboardInterrupt: pass
+    assert events[:4] == ['stop', 'run', 'stop', 'run'] and passes[:3] == [False, False, False], (events, passes)
+# The watcher's program counts as replaced once a different file is in place,
+# unchanged since the previous look, and no pacman transaction is running (or
+# its lock is a minute old). A missing or unrunnable file is never run.
+with tempfile.TemporaryDirectory() as temporary:
+    directory = Path(temporary); path = directory / 'omarchy-audio-asahi-mic-map'; lock = directory / 'db.lck'
+    def put(text, mode=0o755):
+        new = directory / 'new'; new.write_text(text); new.chmod(mode); os.replace(new, path)
+    put('old')
+    program = m.Program(path, lock=lock)
+    assert not program.replaced() and not program.replaced(), 'the started program is current'
+    put('new')
+    assert not program.replaced(), 'a file just written may still be changing'
+    assert program.replaced(), 'a replaced file unchanged since the previous look is run'
+    program = m.Program(path, lock=lock)
+    put('newer'); lock.touch()
+    assert not program.replaced() and not program.replaced(), 'not while pacman holds its lock'
+    lock.unlink()
+    assert program.replaced(), 'once the transaction ends'
+    program = m.Program(path, lock=lock, patience=0.0)
+    put('stale lock'); lock.touch()
+    assert not program.replaced() and program.replaced(), 'a lock pacman left behind delays the reload only so long'
+    lock.unlink()
+    program = m.Program(path, lock=lock)
+    path.unlink()
+    assert not program.replaced() and not program.replaced(), 'a removed program is not run'
+    put('not executable', 0o644)
+    assert not program.replaced() and not program.replaced(), 'an unrunnable program is not run'
+    with mock.patch.object(m.os, 'execv', side_effect=OSError('Exec format error')):
+        program = m.Program(path, lock=lock); put('broken')
+        program.replaced(); assert program.replaced()
+        program.run()
+        assert not program.replaced(), 'a program that would not run is not retried until it changes again'
 # The live probe reads float samples from the mapping through parec: any
 # non-zero sample, however quiet, is signal; zeros (either sign) are digital
 # silence; a recorder that yields nothing is unknown.
@@ -776,5 +841,5 @@ assert '--watch' in unit and 'PartOf=graphical-session.target' in unit
 assert 'PartOf=pipewire.service' not in unit and 'After=graphical-session.target' not in unit
 print('ok - transactional Asahi mapping preserves choices/gain, rolls back failures and recovers lifecycle loss')
 print('ok - the mapping is a typed stereo remap source that replaces the 0.1.2 virtual source on upgrade')
-print('ok - the watcher subscribes before each pass, so a DSP that appears late is mapped')
+print('ok - the watcher subscribes before each pass, so a late DSP is mapped, and runs its program once an upgrade replaced it')
 PY

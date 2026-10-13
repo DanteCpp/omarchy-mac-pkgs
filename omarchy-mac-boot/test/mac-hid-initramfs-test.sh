@@ -34,12 +34,9 @@ grep -Fq 'After=sysroot.mount' "$late_unit" ||
   fail "the late unit still waits for sysroot.mount"
 grep -Fq 'Before=cryptsetup-pre.target' "$early_unit" ||
   fail "the early unit is ordered Before=cryptsetup-pre.target"
-grep -Fq 'dev-disk-by\x2duuid-4F4D\x2d5801.device' "$early_unit" ||
-  fail "the early unit orders After/Wants the image ESP device"
-grep -E '^After=' "$early_unit" | grep -Fq 'dev-disk-by\x2duuid-4F4D\x2d5801.device' ||
-  fail "the early unit is After the ESP device unit"
-grep -E '^Wants=' "$early_unit" | grep -Fq 'dev-disk-by\x2duuid-4F4D\x2d5801.device' ||
-  fail "the early unit Wants the ESP device unit"
+if grep -E '^(After|Wants|Requires|BindsTo)=' "$early_unit" | grep -Fq 'dev-disk-by'; then
+  fail "the early unit must not wait on one ESP device: a migrated Mac keeps its own ESP"
+fi
 grep -Eq '^JobTimeoutSec=' "$early_unit" ||
   fail "the early unit sets JobTimeoutSec so a missing ESP cannot hang forever"
 grep -Fq 'DefaultDependencies=no' "$early_unit" ||
@@ -452,6 +449,8 @@ exit 0
 SH
 chmod +x "$tmp/helper-bin"/{mount,umount,cpio,blkid,udevadm}
 
+# The host's device tree must not leak in; the partuuid case sets its own.
+export OMARCHY_VENDORFW_ESP_PARTUUID=$tmp/no-device-tree
 mkdir -p /dev/disk/by-uuid /lib/firmware /vendorfw/keep
 printf 'sentinel\n' >/vendorfw/keep/already-there.bin
 ln -sfn /vendorfw /lib/firmware/vendor
@@ -500,6 +499,23 @@ wait
 echo 'ok - delayed ESP appearance still stages vendor firmware'
 
 reset_helper
+rm -f /dev/disk/by-uuid/4F4D-5801
+esp_partuuid=5e1f0c2a-0d6b-4c3e-9a7f-1b2c3d4e5f60
+printf '%s\0' "$esp_partuuid" >"$tmp/device-tree-esp"
+mkdir -p /dev/disk/by-partuuid
+touch "/dev/disk/by-partuuid/$esp_partuuid"
+OMARCHY_VENDORFW_ESP_PARTUUID=$tmp/device-tree-esp PATH="$tmp/helper-bin:$PATH" \
+  /usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh >"$tmp/partuuid.out" 2>"$tmp/partuuid.err" ||
+  fail "an ESP named only by the device tree must not fail the helper" "$(cat "$tmp/partuuid.err")"
+grep -Fq "dev=/dev/disk/by-partuuid/$esp_partuuid" /run/omarchy-vendorfw-initrd.staged ||
+  fail "a migrated Mac's own ESP, named by the device tree, stages vendor firmware" "$(cat "$tmp/partuuid.err")"
+[[ ! -e /run/omarchy-vendorfw-initrd.status ]] ||
+  fail "an ESP found by the device tree must not record status=missing"
+rm -f "/dev/disk/by-partuuid/$esp_partuuid"
+echo 'ok - a migrated ESP that is not the image ESP is found through the device tree'
+
+reset_helper
+touch /dev/disk/by-uuid/4F4D-5801
 rm -f "$esp/vendorfw/firmware.cpio"
 PATH="$tmp/helper-bin:$PATH" /usr/lib/omarchy/initcpio/omarchy-vendorfw-initrd.sh \
   >"$tmp/nocpio.out" 2>"$tmp/nocpio.err" ||

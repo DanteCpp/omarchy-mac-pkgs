@@ -29,14 +29,15 @@ log_missing() {
 }
 
 esp=
-dt=/proc/device-tree/chosen/asahi,efi-system-partition
+dt=${OMARCHY_VENDORFW_ESP_PARTUUID:-/proc/device-tree/chosen/asahi,efi-system-partition}
 if [ -e "$dt" ]; then
     esp=$(tr -d '\0' <"$dt")
 fi
 
 dev=
 i=0
-while [ "$i" -lt 50 ]; do
+# Ten seconds, inside the unit's JobTimeoutSec, for the NVMe to come up.
+while [ "$i" -lt 100 ]; do
     if [ -e "/dev/disk/by-uuid/$image_esp_uuid" ]; then
         dev="/dev/disk/by-uuid/$image_esp_uuid"
         break

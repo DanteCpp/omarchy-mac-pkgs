@@ -162,15 +162,19 @@ grep -Fxq 'Before=display-manager.service sddm.service' "$UNIT" || fail "the rel
 grep -Fxq 'ExecStart=/usr/lib/omarchy/mac-boot/external-displays release' "$UNIT" || fail "the unit runs the release"
 [[ $(readlink "$FILES/usr/lib/systemd/system/multi-user.target.wants/omarchy-mac-external-displays.service") == ../omarchy-mac-external-displays.service ]] ||
   fail "multi-user.target pulls the release in without an enable step"
+# Verify in a staged root, so ExecStart is checked at the package's own path,
+# never the host's. Any output fails.
 if command -v systemd-analyze >/dev/null; then
-  mkdir -p "$tmp/units"
-  cp "$UNIT" "$tmp/units/"
-  mkdir -p "$tmp/probe"
-  printf '[Unit]\nDefaultDependencies=no\n[Service]\nType=oneshot\nExecStart=%s\n' "$SCRIPT" >"$tmp/probe/probe.service"
-  if probe_out=$(systemd-analyze verify --man=no "$tmp/probe/probe.service" 2>&1) && [[ -z $probe_out ]]; then
-    systemd-analyze verify --man=no "$tmp/units/omarchy-mac-external-displays.service" 2>"$tmp/verify" ||
-      ! grep -v -e 'not found' -e 'not executable' -e 'Cannot add dependency' "$tmp/verify" | grep -q . ||
-      fail "the unit verifies: $(cat "$tmp/verify")"
+  verify_root=$tmp/verify-root
+  verify_units=$verify_root/usr/lib/systemd/system
+  install -D -m 755 "$SCRIPT" "$verify_root/usr/lib/omarchy/mac-boot/external-displays"
+  install -D -m 644 "$UNIT" "$verify_units/omarchy-mac-external-displays.service"
+  printf '[Unit]\nDefaultDependencies=no\n[Service]\nType=oneshot\nExecStart=/usr/lib/omarchy/mac-boot/external-displays\n' \
+    >"$verify_units/probe.service"
+  if probe_out=$(systemd-analyze verify --man=no --root="$verify_root" "$verify_units/probe.service" 2>&1) && [[ -z $probe_out ]]; then
+    verify_out=$(systemd-analyze verify --man=no --root="$verify_root" "$verify_units/omarchy-mac-external-displays.service" 2>&1) ||
+      verify_out+=$'\n'"exit $?"
+    [[ -z $verify_out ]] || fail "the unit verifies: $verify_out"
   else
     echo 'ok - systemd-analyze cannot verify units here; unit verification not run'
   fi

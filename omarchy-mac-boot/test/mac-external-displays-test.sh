@@ -299,9 +299,11 @@ pass "the lid is read from the kernel's switch, unknown when it can't be"
 [[ -x $SCRIPT ]] && bash -n "$SCRIPT" || fail "the script is executable and parses"
 grep -Fxq 'ACTION=="add", SUBSYSTEM=="drm", KERNEL=="card[0-9]*", ENV{DEVTYPE}=="drm_minor", DRIVERS=="apple-drm", RUN+="/usr/lib/omarchy/mac-boot/external-displays hold %k"' "$RULES" ||
   fail "the Apple display card is held as it appears"
-FIT_DROPIN=$FILES/usr/lib/systemd/system/omarchy-provision-owner.service.d/30-omarchy-mac-console-fit.conf
-grep -Fxq 'ExecStartPre=-/usr/lib/omarchy/mac-boot/external-displays fit' "$FIT_DROPIN" ||
-  fail "owner setup fits the console after its own ExecStartPre has quit the splash"
+for unit in omarchy-provision-owner omarchy-drive-recover; do
+  grep -Fxq 'ExecStartPre=-/usr/lib/omarchy/mac-boot/external-displays fit' \
+    "$FILES/usr/lib/systemd/system/$unit.service.d/30-omarchy-mac-console-fit.conf" ||
+    fail "$unit fits the console after its own ExecStartPre has quit the splash"
+done
 ! grep -q 'external-displays fit' "$RULES" || fail "udev never fits the console: the splash still holds tty1 then"
 FIRST_BOOT=$FILES/usr/lib/omarchy/mac-first-boot/omarchy-mac-first-boot
 take=$(sed -n '/^take_console()/,/^}/p' "$FIRST_BOOT")

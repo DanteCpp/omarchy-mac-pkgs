@@ -591,8 +591,8 @@ with tempfile.TemporaryDirectory() as temporary:
     # The watcher sleeps on pactl events instead of polling: device events wake
     # it once they settle, application and stream events never do, a steady
     # stream cannot starve repair, and a lost subscription still yields one.
-    def feed(script, **options):
-        sub = m.Subscription(command=['bash', '-c', script], **dict(dict(quiet=0.1, settle=1.0, backstop=0.6, retry=0.05), **options))
+    def feed(script, command=None, **options):
+        sub = m.Subscription(command=command or ['bash', '-c', script], **dict(dict(quiet=0.1, settle=1.0, backstop=0.6, retry=0.05), **options))
         sub.start(); sub.last_full = time.monotonic(); return sub
     def timed(sub):
         start = time.monotonic(); sub.wait(); elapsed = time.monotonic() - start; sub.stop(); return elapsed
@@ -630,7 +630,16 @@ with tempfile.TemporaryDirectory() as temporary:
     try: m.supervise(saving, wait=lambda: next(answers))
     except KeyboardInterrupt: pass
     assert saves == [False, True, False], saves
-    elapsed = timed(feed("for i in $(seq 20); do echo \"Event 'new' on sink #1\"; sleep 0.05; done; sleep 3"))
+    # Events keep coming well inside the quiet interval for three times the
+    # settle cap, so only the cap ends the wait, however slow the machine's
+    # timers. The cap counts from the first event, so timing starts at one.
+    emitter = ("import time\n"
+               "for _ in range(60):\n"
+               "    print(\"Event 'new' on sink #1\", flush=True); time.sleep(0.05)\n"
+               "time.sleep(3)\n")
+    steady = feed(None, command=[sys.executable, '-u', '-c', emitter], quiet=0.5)
+    m.select.select([steady.process.stdout], [], [], 10); steady.last_full = time.monotonic()
+    elapsed = timed(steady)
     assert 0.9 <= elapsed < 1.5, ('a steady event stream must repair at the settle cap', elapsed)
     sub = feed("sleep 3"); start = time.monotonic(); sub.wait(0.2); elapsed = time.monotonic() - start; sub.stop()
     assert 0.2 <= elapsed < 0.5, ('a pending lost-array notice shortens the wait', elapsed)

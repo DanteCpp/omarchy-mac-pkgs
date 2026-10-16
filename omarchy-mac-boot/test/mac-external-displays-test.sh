@@ -153,46 +153,51 @@ pass "release reports what it could not do"
 # ── console ────────────────────────────────────────────────────────────────
 # The kernel console was sized as the card came up, to the smallest display
 # lit then (3440x1440 here): owner setup on tty1 filled only the top two thirds
-# of the panel. While the externals are held, it is fitted to the panel.
+# of the panel. Once the splash has quit, while the externals are held, it is
+# fitted to the panel; the release gives it back the kernel's size.
 new_mac
 with_console
 displays hold card2 || fail "hold succeeds with a console"
-[[ $(console) == "3456 2234" ]] || fail "hold fits a console that came first to the panel: $(console)"
+[[ $(console) == "3440 1440" ]] || fail "the hold leaves the console alone: $(console)"
+displays fit || fail "fit succeeds under the splash"
+[[ $(console) == "3440 1440" && ! -e $tmp/run/console-fitted ]] ||
+  fail "a fit under the splash changes nothing (the kernel console puts tty1's size back as Plymouth hands it over): $(console)"
+grep -Fxq -- "-t omarchy-mac-external-displays -- not fitting the console while the splash runs" "$tmp/journal" ||
+  fail "a fit under the splash says so: $(cat "$tmp/journal")"
+rm "$tmp/splash"
+displays fit || fail "fit succeeds once the splash has quit"
+[[ $(console) == "3456 2234" ]] || fail "fit fills the panel: $(console)"
 [[ $(console fb1) == "3456 2160" ]] || fail "another device's console is left alone"
-[[ $(<"$tmp/run/console-fitted") == "fb0 3440 1440" ]] || fail "hold records the console's own size: $(cat "$tmp/run/console-fitted")"
+[[ $(<"$tmp/run/console-fitted") == "fb0 3440 1440" ]] || fail "fit records the kernel's size: $(cat "$tmp/run/console-fitted")"
 grep -Fxq -- "-t omarchy-mac-external-displays -- fitted the console on fb0 to the built-in panel: 3440x1440 to 3456x2234" "$tmp/journal" ||
-  fail "hold logs the fit: $(cat "$tmp/journal")"
-displays fit fb0 && [[ $(<"$tmp/run/console-fitted") == "fb0 3440 1440" ]] || fail "a replayed fit keeps the console's own size"
+  fail "fit logs what it did: $(cat "$tmp/journal")"
+echo "3440 1440" >"$tmp/fb/fb0"
+displays fit && [[ $(console) == "3456 2234" && $(<"$tmp/run/console-fitted") == "fb0 3440 1440" ]] ||
+  fail "a later fit fills the panel again and keeps the kernel's size for the release"
 displays release >"$tmp/out" || fail "release succeeds with a fitted console"
-[[ $(console) == "3440 1440" && ! -e $tmp/run/console-fitted ]] || fail "release gives the console back its own size: $(console)"
+[[ $(console) == "3440 1440" && ! -e $tmp/run/console-fitted ]] || fail "release gives the console back the kernel's size: $(console)"
 grep -Fxq 'omarchy-mac-external-displays: gave the console on fb0 back its 3440x1440' "$tmp/out" || fail "release logs the restore"
-displays fit fb0 && [[ $(console) == "3440 1440" ]] || fail "a console is not fitted after the release"
-pass "a console that came before the hold fills the panel until the release"
+displays fit && [[ $(console) == "3440 1440" ]] || fail "a console is not fitted after the release"
+pass "once the splash has quit, a held panel's console fills it until the release"
 
-new_mac
-displays hold card2
-with_console
-displays fit fb0 || fail "fit succeeds"
-[[ $(console) == "3456 2234" && $(<"$tmp/run/console-fitted") == "fb0 3440 1440" ]] ||
-  fail "a console that comes after the hold is fitted as it appears: $(console)"
-displays fit fb1 && [[ $(console fb1) == "3456 2160" ]] || fail "another device's console is never fitted"
-displays fit 'fb0;rm' || fail "a bad console name is ignored"
-pass "a console that comes after the hold is fitted as it appears"
-
-for case in nothing-held released same-size clipped refused unreadable no-mode; do
+for case in nothing-held released same-size clipped refused unreadable no-mode no-console; do
   new_mac
   with_console
   expect="3440 1440"
   case $case in
     nothing-held) echo closed >"$tmp/lid" ;;
-    released) mkdir -p "$tmp/run" && : >"$tmp/run/external-displays-released" ;;
+    released) ;;
     same-size) echo "3456 2234" >"$tmp/fb/fb0" && expect="3456 2234" ;;
     clipped) echo 4000,2160 >"$sys/class/graphics/fb0/virtual_size" && expect="3456 2160" ;;
     refused) : >"$tmp/fb-refuses" ;;
     unreadable) echo garbage >"$tmp/fb/fb0" && expect=garbage ;;
     no-mode) : >"$sys/class/drm/card2-eDP-1/modes" ;;
+    no-console) rm "$sys/class/graphics/fb0/device" ;;
   esac
-  displays hold card2 && displays fit fb0 || fail "hold and fit succeed ($case)"
+  displays hold card2 || fail "hold succeeds ($case)"
+  [[ $case != released ]] || : >"$tmp/run/external-displays-released"
+  rm "$tmp/splash"
+  displays fit || fail "fit succeeds ($case)"
   [[ $(console) == "$expect" ]] || fail "the console is $expect ($case): $(console)"
   case $case in
     clipped) [[ -e $tmp/run/console-fitted ]] || fail "a clipped fit is recorded" ;;
@@ -212,7 +217,11 @@ pass "a console is fitted only to a held panel, inside its buffer, and left alon
 new_mac
 with_console
 displays hold card2
+rm "$tmp/splash"
+displays fit
+echo "3440 1440" >"$tmp/fb/fb0"
 : >"$tmp/fb-refuses"
+displays fit && [[ $(<"$tmp/run/console-fitted") == "fb0 3440 1440" ]] || fail "a refused later fit keeps the kernel's size on record"
 if displays release >/dev/null 2>"$tmp/err"; then fail "a console that refuses its own size back fails the release"; fi
 grep -Fq 'could not give the console on fb0 back its 3440x1440' "$tmp/err" || fail "the failure names the console"
 [[ $(externals) == "detect detect detect detect " ]] || fail "the displays still come back on"
@@ -290,8 +299,16 @@ pass "the lid is read from the kernel's switch, unknown when it can't be"
 [[ -x $SCRIPT ]] && bash -n "$SCRIPT" || fail "the script is executable and parses"
 grep -Fxq 'ACTION=="add", SUBSYSTEM=="drm", KERNEL=="card[0-9]*", ENV{DEVTYPE}=="drm_minor", DRIVERS=="apple-drm", RUN+="/usr/lib/omarchy/mac-boot/external-displays hold %k"' "$RULES" ||
   fail "the Apple display card is held as it appears"
-grep -Fxq 'ACTION=="add", SUBSYSTEM=="graphics", KERNEL=="fb[0-9]*", DRIVERS=="apple-drm", RUN+="/usr/lib/omarchy/mac-boot/external-displays fit %k"' "$RULES" ||
-  fail "the Apple display card's console is fitted as it appears"
+FIT_DROPIN=$FILES/usr/lib/systemd/system/omarchy-provision-owner.service.d/30-omarchy-mac-console-fit.conf
+grep -Fxq 'ExecStartPre=-/usr/lib/omarchy/mac-boot/external-displays fit' "$FIT_DROPIN" ||
+  fail "owner setup fits the console after its own ExecStartPre has quit the splash"
+! grep -q 'external-displays fit' "$RULES" || fail "udev never fits the console: the splash still holds tty1 then"
+FIRST_BOOT=$FILES/usr/lib/omarchy/mac-first-boot/omarchy-mac-first-boot
+take=$(sed -n '/^take_console()/,/^}/p' "$FIRST_BOOT")
+quit_at=$(grep -n 'plymouth quit' <<<"$take" | cut -d: -f1)
+fit_at=$(grep -nF '"$external_displays" fit' <<<"$take" | cut -d: -f1)
+[[ -n $quit_at && -n $fit_at ]] && (( fit_at > quit_at )) ||
+  fail "first boot's failure screen fits the console after quitting the splash"
 grep -Fxq 'ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card[0-9]*", ENV{SYNTH_ARG_OMARCHYMACDISPLAYS}=="1", ENV{HOTPLUG}="1"' "$RULES" ||
   fail "the release's synthetic change is a hotplug (aquamarine rescans on HOTPLUG=1 only)"
 grep -Fxq 'After=plymouth-quit.service plymouth-quit-wait.service omarchy-provision-owner.service omarchy-drive-recover.service' "$UNIT" ||

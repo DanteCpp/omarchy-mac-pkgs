@@ -6,9 +6,9 @@
 #               can see it: forces every connector but the built-in panel off,
 #               only while the splash runs, on a laptop whose lid is open
 #               (a shut lid, a desktop Mac or an unknown lid keeps them all)
-#   fit fbN     udev, as the card's kernel console appears: fits it to the
-#               built-in panel while the externals are held (hold does the
-#               same when the console came first)
+#   fit         after the splash quits and before tty1 shows anything (owner
+#               setup, first boot's failure screen): while the externals are
+#               held, fits the kernel console to the built-in panel
 #   release     omarchy-mac-external-displays.service, after the splash quits
 #               and owner setup ends, before the display manager: turns them
 #               back on and gives the kernel console back its own size
@@ -21,8 +21,10 @@
 # asleep. It also keeps the size it chose then, the smallest of those heads: a
 # 1440-row monitor left owner setup on tty1 in the top two thirds of a
 # 2234-row panel. Fitting it to the panel while the externals are held fills
-# the panel; the release restores it. A boot that never reaches multi-user.target (emergency, rescue)
-# keeps the held displays off for that session.
+# the panel; the release restores it. The fit waits for the splash to quit:
+# the kernel console keeps each terminal's size and puts it back as Plymouth
+# hands tty1 back. A boot that never reaches multi-user.target (emergency,
+# rescue) keeps the held displays off for that session.
 
 set -uo pipefail
 
@@ -102,7 +104,6 @@ hold() {
     fi
   done
   (( ${#held_now[@]} )) && note "held $card's external displays off: ${held_now[*]}"
-  fit_console "$card"
   return 0
 }
 
@@ -111,14 +112,12 @@ same_device() {
   a=$(readlink -f "$1/device" 2>/dev/null) && b=$(readlink -f "$2/device" 2>/dev/null) && [[ -n $a && $a == "$b" ]]
 }
 
-# The kernel console registers just after its card. Its size is the smallest
-# display lit as the card came up; with the externals held, the built-in panel
-# is the only one showing it. The panel's preferred mode is the one the
-# console lit it with, clipped to the console's buffer.
+# The kernel console's size is the smallest display lit as its card came up;
+# with the externals held, the built-in panel is the only one showing it. The
+# panel's preferred mode is the one the console lit it with, clipped to the
+# console's buffer. The first fit records the kernel's size for the release.
 fit_console() {
   local card=$1 fb="" path panel="" mode width height vwidth vheight current
-  [[ ! -e $released && ! -e $fitted ]] || return 0
-  grep -q "^$card-" "$held" 2>/dev/null || return 0
   for path in "$sysfs/class/graphics"/fb*; do
     same_device "$path" "$sysfs/class/drm/$card" && fb=${path##*/} && break
   done
@@ -139,23 +138,33 @@ fit_console() {
     return 0
   fi
   [[ $current != "$width $height" ]] || return 0
-  printf '%s %s\n' "$fb" "$current" >"$fitted" || return 0
+  local recorded=false
+  if [[ ! -e $fitted ]]; then
+    printf '%s %s\n' "$fb" "$current" >"$fitted" || return 0
+    recorded=true
+  fi
   if "$fb_geometry" "$fb" "$width" "$height"; then
     note "fitted the console on $fb to the built-in panel: ${current/ /x} to ${width}x$height"
   else
-    rm -f "$fitted"
+    ! $recorded || rm -f "$fitted"
     note "could not fit the console on $fb to the built-in panel (${width}x$height)"
   fi
 }
 
 fit() {
-  local fb=$1 card
-  [[ $fb =~ ^fb[0-9]+$ ]] || return 0
+  local connector card cards=()
   lock || return 0
-  for card in "$sysfs/class/drm"/card*; do
-    [[ ${card##*/} =~ ^card[0-9]+$ ]] && same_device "$card" "$sysfs/class/graphics/$fb" || continue
-    fit_console "${card##*/}"
+  [[ -s $held && ! -e $released ]] || return 0
+  if splash_running; then
+    note "not fitting the console while the splash runs"
     return 0
+  fi
+  while IFS= read -r connector; do
+    card=${connector%%-*}
+    [[ $card =~ ^card[0-9]+$ && " ${cards[*]-} " != *" $card "* ]] && cards+=("$card")
+  done <"$held"
+  for card in "${cards[@]}"; do
+    fit_console "$card"
   done
   return 0
 }
@@ -213,10 +222,10 @@ release() {
 
 case ${1:-} in
   hold) hold "${2:-}" ;;
-  fit) fit "${2:-}" ;;
+  fit) fit ;;
   release) release ;;
   *)
-    echo "Usage: ${0##*/} hold cardN | fit fbN | release" >&2
+    echo "Usage: ${0##*/} hold cardN | fit | release" >&2
     exit 2
     ;;
 esac

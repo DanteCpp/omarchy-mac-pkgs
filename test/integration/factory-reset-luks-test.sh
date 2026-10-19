@@ -191,6 +191,12 @@ mkdir -p "$omarchy/bin"
 for command in omarchy-lifecycle-dispatch omarchy-hw-platform; do
   ln -s "$ROOT/bin/$command" "$omarchy/bin/$command"
 done
+# A runtime with omarchy-i18n prints the reset's text through it, from its catalogs.
+if [[ -x $ROOT/bin/omarchy-i18n ]]; then
+  ln -s "$ROOT/bin/omarchy-i18n" "$stub_bin/omarchy-i18n"
+  mkdir -p "$omarchy/default"
+  ln -s "$ROOT/default/i18n" "$omarchy/default/i18n"
+fi
 
 base_path=$stub_bin:$PATH
 export OMARCHY_PATH=$omarchy OMARCHY_LIFECYCLE_ROOT=$lifecycle

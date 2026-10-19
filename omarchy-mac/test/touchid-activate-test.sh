@@ -96,3 +96,42 @@ if command -v systemd-analyze >/dev/null; then
     fail 'systemd accepts the unit' "$(cat "$work/verify")"
   pass 'systemd accepts the Touch ID unit'
 fi
+
+# fprintd's own unit allows no misc devices, so the drop-in lets it open
+# /dev/sep-bio, and waits for the node only where the driver has a device.
+dropin=$work/root/usr/lib/systemd/system/fprintd.service.d/50-omarchy-mac-touchid.conf
+[[ -f $dropin ]] || fail 'the fprintd drop-in is staged'
+grep -Fxq 'DeviceAllow=char-misc rw' "$dropin" && grep -Fxq 'After=omarchy-mac-touchid-activate.service' "$dropin" ||
+  fail 'the drop-in lets fprintd open a misc device, after Touch ID is activated'
+[[ $(grep -c '^DeviceAllow=' "$dropin") == 1 && -z $(grep -E '^(DevicePolicy|DeviceAllow=)$' "$dropin") ]] ||
+  fail 'the drop-in only adds an allowance and never resets the reader devices fprintd already allows'
+wait_command=$(sed -n "s|^ExecStartPre=/usr/bin/sh -c '\(.*\)'$|\1|p" "$dropin")
+wait_command=${wait_command//\/dev\/sep-bio/$fixture/sep-bio}
+wait_command=${wait_command//\/sys\/bus\/platform\/drivers\/apple_sep/$fixture/wait_sep}
+waits() {
+  : >"$fixture/sleeps"
+  PATH="$fixture/bin:$PATH" sh -c "$wait_command"
+  wc -l <"$fixture/sleeps"
+}
+printf '#!/bin/sh\necho >>"%s"\nexit 0\n' "$fixture/sleeps" >"$fixture/bin/sleep"
+mkdir -p "$fixture/wait_sep"
+rm -f "$fixture/sep-bio"
+[[ $(waits) == 0 ]] || fail 'without a Secure Enclave device, fprintd starts at once, so a USB reader is not held up'
+mkdir -p "$fixture/wait_sep/396400000.sep"
+touch "$fixture/sep-bio"
+[[ $(waits) == 0 ]] || fail 'with the node already there, fprintd starts at once'
+rm "$fixture/sep-bio"
+[[ $(waits) == 150 ]] || fail 'with a device but no node, fprintd waits at most 15 s, then starts anyway'
+pass 'fprintd may open Touch ID, waiting for it only on a Mac whose Secure Enclave driver has a device'
+
+if command -v systemd-analyze >/dev/null; then
+  # Arch's fprintd.service lines that matter here: no DevicePolicy, four allowances.
+  mkdir -p "$work/root/usr/lib/systemd/system"
+  printf '#!/bin/sh\nexit 0\n' >"$work/root/usr/lib/fprintd"
+  chmod +x "$work/root/usr/lib/fprintd"
+  printf '[Unit]\nDescription=Fingerprint Authentication Daemon\n\n[Service]\nExecStart=/usr/lib/fprintd\nDeviceAllow=char-usb_device rw\nDeviceAllow=char-spi rw\nDeviceAllow=char-hidraw rw\nDeviceAllow=/dev/cros_fp rw\n' \
+    >"$work/root/usr/lib/systemd/system/fprintd.service"
+  systemd-analyze --root="$work/root" verify --man=no /usr/lib/systemd/system/fprintd.service 2>"$work/verify-fprintd" ||
+    fail 'systemd accepts fprintd with the drop-in' "$(cat "$work/verify-fprintd")"
+  pass 'systemd accepts fprintd with the Touch ID drop-in'
+fi

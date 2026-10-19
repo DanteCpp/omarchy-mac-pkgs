@@ -4,6 +4,9 @@
 [Unit]
 Description=Activate Touch ID
 ConditionPathExists=/dev/sep-bio
+# A failed activation stays failed for the rest of the boot, so open the node
+# only once the kernel has made this Mac's keybag.
+ConditionPathExists=/var/lib/aurora-sep-keybag.bin
 
 [Service]
 Type=oneshot

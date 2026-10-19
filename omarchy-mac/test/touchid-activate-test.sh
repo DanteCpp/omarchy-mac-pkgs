@@ -16,9 +16,33 @@ grep -Fxq 'ACTION=="add", SUBSYSTEM=="misc", KERNEL=="sep-bio", TAG+="systemd", 
 grep -q "^ExecStart=/usr/bin/sh -c 'true 2>/dev/null </dev/sep-bio; " "$unit" && grep -Fxq 'Type=oneshot' "$unit" &&
   grep -Fxq 'ConditionPathExists=/dev/sep-bio' "$unit" && grep -Fxq 'TimeoutStartSec=15s' "$unit" ||
   fail 'the unit opens /dev/sep-bio once, only where it exists, and within a bounded time'
+grep -Fxq 'ConditionPathExists=/var/lib/aurora-sep-keybag.bin' "$unit" ||
+  fail 'the unit opens /dev/sep-bio only once the kernel has made the keybag'
 ! grep -q '^StandardInput=' "$unit" || fail 'the platform check does not open /dev/sep-bio as well'
 ! grep -q '^\[Install\]' "$unit" || fail 'the unit needs no enabling: the rule pulls it in'
 pass 'the Touch ID rule and unit are staged, and the rule alone starts the unit'
+
+# Both conditions must hold: with no keybag the unit is skipped, so nothing
+# opens the node and latches a failed activation for the boot.
+if command -v systemd-analyze >/dev/null && systemd-analyze condition --help >/dev/null 2>&1; then
+  conditions=$(grep '^ConditionPathExists=' "$unit")
+  node=$work/condition/sep-bio
+  keybag=$work/condition/aurora-sep-keybag.bin
+  mkdir -p "$work/condition"
+  check() {
+    local list=${conditions//\/dev\/sep-bio/$node}
+    list=${list//\/var\/lib\/aurora-sep-keybag.bin/$keybag}
+    mapfile -t list <<<"$list"
+    systemd-analyze condition "${list[@]}" >/dev/null 2>&1
+  }
+  touch "$node"
+  ! check || fail 'a Mac with the node but no keybag skips the unit'
+  touch "$keybag"
+  check || fail 'a Mac with the node and the keybag runs the unit'
+  rm "$node"
+  ! check || fail 'a Mac with a keybag but no node skips the unit'
+  pass 'the unit runs only where both the node and the keybag exist'
+fi
 
 # The unit's command, run against a fixture node and sysfs, succeeds only when
 # Touch ID reads "ready" after it, whether its open worked or the node was busy.

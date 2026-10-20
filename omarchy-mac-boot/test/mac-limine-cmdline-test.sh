@@ -164,3 +164,29 @@ run || fail "the run over an indented = line succeeds"
   fail "an indented = line is replaced, not left beside the new one" "$(cat "$limine")"
 pass "an existing = line is rewritten with +="
 
+# limine-entry-tool loads /etc/limine-entry-tool.d/*.conf before
+# /etc/default/limine, so only += keeps what a drop-in appended. Runs the real
+# tool in a user namespace with stand-ins bound over its config paths.
+if command -v limine-entry-tool >/dev/null && unshare -rm true 2>/dev/null &&
+  [[ -d /etc/limine-entry-tool.d && -f /etc/default/limine ]]; then
+  stand_in=$test_tmp/entry-tool
+  mkdir -p "$stand_in/d" "$stand_in/esp" "$stand_in/empty-dir"
+  : >"$stand_in/empty-file"
+  printf 'KERNEL_CMDLINE[default]+=" initramfs_async=0"\nKERNEL_CMDLINE[default]+=" systemd.tty.term.console=dumb"\n' \
+    >"$stand_in/d/10-defaults.conf"
+  printf 'ESP_PATH="%s"\n' "$stand_in/esp" >"$limine"
+  run || fail "the run for the entry tool succeeds"
+  # shellcheck disable=SC2016 # expanded by the namespace's shell
+  result=$(unshare -rm bash -c '
+    mount --bind "$1/d" /etc/limine-entry-tool.d && mount --bind "$2" /etc/default/limine || exit 1
+    [[ ! -f /etc/limine-entry-tool.conf ]] || mount --bind "$1/empty-file" /etc/limine-entry-tool.conf || exit 1
+    [[ ! -d /usr/share/limine-entry-tool.d ]] || mount --bind "$1/empty-dir" /usr/share/limine-entry-tool.d || exit 1
+    limine-entry-tool --get-cmdline linux-aurora --no-mutex --no-hooks | tail -n 1' _ "$stand_in" "$limine") ||
+    fail "limine-entry-tool reads the command line"
+  [[ $result == "root=UUID=$root_uuid rw quiet "* && " $result " == *" initramfs_async=0 "* &&
+    " $result " == *" systemd.tty.term.console=dumb "* ]] ||
+    fail "the drop-in's words follow the derived line in limine-entry-tool's command line" "$result"
+  pass "limine-entry-tool appends the drop-ins' words to the derived command line"
+else
+  printf 'skip - %s\n' "limine-entry-tool, a user namespace or its config paths are unavailable; its command line is not checked here"
+fi

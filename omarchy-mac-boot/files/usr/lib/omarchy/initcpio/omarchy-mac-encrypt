@@ -25,29 +25,29 @@ omarchy_mac_encrypt_say() {
 # Keep bounded, non-secret failure evidence across an initrd reboot. Logging
 # is best effort and must never stop the reader that drains cryptsetup output.
 omarchy_mac_encrypt_diagnostic() {
-  local file=${BOOT_MNT:-}/omarchy/encrypt.log size message=$*
-  [[ -n ${BOOT_MNT:-} && -d $BOOT_MNT/omarchy ]] || return 0
-  [[ ! -L $file && ( ! -e $file || -f $file ) ]] || return 0
-  size=$(stat -c %s "$file" 2>/dev/null || printf 0)
-  (( size < 65536 )) || return 0
-  (umask 077; printf '%s %s\n' "$(date -u +%FT%TZ)" "${message:0:4096}" >>"$file"; chmod 0600 "$file") 2>/dev/null || true
+    local file=${BOOT_MNT:-}/omarchy/encrypt.log size message=$*
+    [[ -n ${BOOT_MNT:-} && -d $BOOT_MNT/omarchy ]] || return 0
+    [[ ! -L $file && ( ! -e $file || -f $file ) ]] || return 0
+    size=$(stat -c %s "$file" 2>/dev/null || printf 0)
+    (( size < 65536 )) || return 0
+    (umask 077; printf '%s %s\n' "$(date -u +%FT%TZ)" "${message:0:4096}" >>"$file"; chmod 0600 "$file") 2>/dev/null || true
 }
 
 omarchy_mac_encrypt_sync_diagnostic() {
-  local file=${BOOT_MNT:-}/omarchy/encrypt.log
-  [[ -n ${BOOT_MNT:-} && -f $file && ! -L $file ]] || return 0
-  sync "$file" 2>/dev/null || true
+    local file=${BOOT_MNT:-}/omarchy/encrypt.log
+    [[ -n ${BOOT_MNT:-} && -f $file && ! -L $file ]] || return 0
+    sync "$file" 2>/dev/null || true
 }
 
 omarchy_mac_encrypt_run() {
-  local stage=$1 status=0
-  shift
-  omarchy_mac_encrypt_say "$stage started"
-  omarchy_mac_encrypt_sync_diagnostic
-  "$@" 2>&1 | omarchy_mac_encrypt_follow_reencrypt || status=$?
-  omarchy_mac_encrypt_diagnostic "$stage exited status=$status"
-  omarchy_mac_encrypt_sync_diagnostic
-  return "$status"
+    local stage=$1 status=0
+    shift
+    omarchy_mac_encrypt_say "$stage started"
+    omarchy_mac_encrypt_sync_diagnostic
+    "$@" 2>&1 | omarchy_mac_encrypt_follow_reencrypt || status=$?
+    omarchy_mac_encrypt_diagnostic "$stage exited status=$status"
+    omarchy_mac_encrypt_sync_diagnostic
+    return "$status"
 }
 
 # First-boot progress on the splash: plymouth's system-update channel moves the
@@ -147,7 +147,10 @@ omarchy_mac_encrypt_inconsistent() {
     printf 'omarchy-mac-encrypt: inconsistent encryption state: %s\n' "$why" >&2
     if [[ ${STATE_PHASE:-} == reencrypting && -n ${BOOT_MNT:-} && -f $BOOT_MNT/omarchy/luks-key &&
           $(stat -c %s "$BOOT_MNT/omarchy/luks-key" 2>/dev/null || echo 0) -eq $KEY_BYTES ]]; then
-        printf 'Repair: cryptsetup reencrypt --resume-only --key-file /boot/omarchy/luks-key %s\n' "$target" >&2
+        printf 'Verify key: cryptsetup open --test-passphrase --key-file /boot/omarchy/luks-key %s\n' "$target" >&2
+        printf 'Preserve a complete private header backup before repair; inspect /boot/omarchy/luks-header-before-repair and .tmp.* staging copies.\n' >&2
+        printf 'Repair: cryptsetup repair --type luks2 --key-file /boot/omarchy/luks-key %s\n' "$target" >&2
+        printf 'Then resume: cryptsetup reencrypt --resume-only --key-file /boot/omarchy/luks-key %s\n' "$target" >&2
     else
         printf 'Repair: inspect /boot/omarchy/encrypt.state and %s before retrying\n' "$target" >&2
     fi
@@ -547,46 +550,58 @@ omarchy_mac_encrypt_require_key() {
 }
 
 omarchy_mac_encrypt_recover() {
-  local backup=$BOOT_MNT/omarchy/luks-header-before-repair tmp metadata
-  cryptsetup open --type luks2 --batch-mode --test-passphrase \
-    --key-file "$BOOT_KEY" --keyfile-size "$KEY_BYTES" "$ROOT_DEV" ||
-    omarchy_mac_encrypt_fail "the saved key does not authenticate the interrupted LUKS2 root"
-  if [[ -e $backup || -L $backup ]]; then
-    [[ -f $backup && ! -L $backup && -s $backup ]] ||
-      omarchy_mac_encrypt_fail "the pre-repair header backup is not a regular file"
-  else
-    tmp=$backup.tmp.$$
-    (umask 077; cryptsetup luksHeaderBackup --header-backup-file "$tmp" "$ROOT_DEV") ||
-      omarchy_mac_encrypt_fail "could not preserve the pre-repair LUKS2 header"
-    sync "$tmp" 2>/dev/null || sync
-    mv "$tmp" "$backup"
-    sync "$BOOT_MNT/omarchy" 2>/dev/null || sync
-  fi
-  # This is forensic evidence, never a header to restore after data has moved.
-  # Recovery authenticates and repairs a crash's active segment before resume.
-  omarchy_mac_encrypt_say "recovering interrupted LUKS2 metadata"
-  omarchy_mac_encrypt_run "LUKS2 recovery" cryptsetup repair --type luks2 --batch-mode --key-file "$BOOT_KEY" \
-    --keyfile-size "$KEY_BYTES" "$ROOT_DEV" ||
-    omarchy_mac_encrypt_fail "cryptsetup repair failed; pre-repair header retained on Boot"
-  metadata=$(cryptsetup luksDump --dump-json-metadata "$ROOT_DEV") ||
-    omarchy_mac_encrypt_fail "could not inspect recovered LUKS2 metadata"
-  [[ $metadata == *'"keyslots"'* && $metadata == *'"segments"'* ]] ||
-    omarchy_mac_encrypt_fail "recovered LUKS2 metadata is incomplete"
-  if [[ $metadata =~ \"type\"[[:space:]]*:[[:space:]]*\"reencrypt\" ]]; then
-    CONVERSION_PENDING=1
-  elif [[ $metadata == *'"online-reencrypt'* || $metadata == *'"in-reencryption"'* ]]; then
-    omarchy_mac_encrypt_fail "recovered metadata still requires reencryption without a reencryption keyslot"
-  else
-    CONVERSION_PENDING=0
-    omarchy_mac_encrypt_say "conversion already complete; finishing the saved boot transaction"
-  fi
+    local backup=$BOOT_MNT/omarchy/luks-header-before-repair tmp metadata
+    cryptsetup open --type luks2 --batch-mode --test-passphrase \
+        --key-file "$BOOT_KEY" --keyfile-size "$KEY_BYTES" "$ROOT_DEV" ||
+        omarchy_mac_encrypt_fail "the saved key does not authenticate the interrupted LUKS2 root"
+    if [[ -e $backup || -L $backup ]]; then
+        [[ -f $backup && ! -L $backup && -s $backup ]] ||
+            omarchy_mac_encrypt_fail "the pre-repair header backup is not a regular file"
+    else
+        tmp=$backup.tmp.$$
+        omarchy_mac_encrypt_remove_header_file "$tmp"
+        (umask 077; cryptsetup luksHeaderBackup --header-backup-file "$tmp" "$ROOT_DEV") ||
+            omarchy_mac_encrypt_fail "could not preserve the pre-repair LUKS2 header"
+        sync "$tmp" 2>/dev/null || sync
+        mv "$tmp" "$backup"
+        sync "$BOOT_MNT/omarchy" 2>/dev/null || sync
+    fi
+    # This is forensic evidence, never a header to restore after data has moved.
+    # Recovery authenticates and repairs a crash's active segment before resume.
+    omarchy_mac_encrypt_say "recovering interrupted LUKS2 metadata"
+    omarchy_mac_encrypt_run "LUKS2 recovery" cryptsetup repair --type luks2 --batch-mode --key-file "$BOOT_KEY" \
+        --keyfile-size "$KEY_BYTES" "$ROOT_DEV" ||
+        omarchy_mac_encrypt_fail "cryptsetup repair failed; pre-repair header retained on Boot"
+    metadata=$(cryptsetup luksDump --dump-json-metadata "$ROOT_DEV") ||
+        omarchy_mac_encrypt_fail "could not inspect recovered LUKS2 metadata"
+    [[ $metadata == *'"keyslots"'* && $metadata == *'"segments"'* ]] ||
+        omarchy_mac_encrypt_fail "recovered LUKS2 metadata is incomplete"
+    if [[ $metadata =~ \"type\"[[:space:]]*:[[:space:]]*\"reencrypt\" ]]; then
+        CONVERSION_PENDING=1
+    elif [[ $metadata == *'"online-reencrypt'* || $metadata == *'"in-reencryption"'* ]]; then
+        omarchy_mac_encrypt_fail "recovered metadata still requires reencryption without a reencryption keyslot"
+    else
+        CONVERSION_PENDING=0
+        omarchy_mac_encrypt_say "conversion already complete; finishing the saved boot transaction"
+    fi
+}
+
+omarchy_mac_encrypt_remove_header_file() {
+    local file=$1
+    if [[ -L $file ]]; then
+        rm -f -- "$file" || omarchy_mac_encrypt_fail "could not remove the header backup symlink"
+    elif [[ -e $file ]]; then
+        [[ -f $file ]] || omarchy_mac_encrypt_fail "header backup is not a regular file"
+        shred -u -- "$file" || omarchy_mac_encrypt_fail "could not remove the obsolete header backup"
+    fi
 }
 
 omarchy_mac_encrypt_remove_recovery_backup() {
-  local backup=$BOOT_MNT/omarchy/luks-header-before-repair
-  [[ -e $backup || -L $backup ]] || return 0
-  rm -f "$backup" || omarchy_mac_encrypt_fail "could not remove the obsolete pre-repair header"
-  sync "$BOOT_MNT/omarchy" 2>/dev/null || sync
+    local backup
+    for backup in "$BOOT_MNT/omarchy/luks-header-before-repair" "$BOOT_MNT"/omarchy/luks-header-before-repair.tmp.*; do
+        omarchy_mac_encrypt_remove_header_file "$backup"
+    done
+    sync "$BOOT_MNT/omarchy" 2>/dev/null || sync
 }
 
 omarchy_mac_encrypt_reencrypt() {

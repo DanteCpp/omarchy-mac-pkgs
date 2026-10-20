@@ -14,7 +14,9 @@ case $1 in
   luksHeaderBackup)
     shift
     [[ $1 == --header-backup-file ]] || exit 1
+    [[ ! -e $2 ]] || exit 5
     printf 'original-header' >"$2"
+    [[ ! -e $CASE/backup-fails ]] || exit 6
     ;;
   repair) [[ ! -e $CASE/repair-fails ]] ;;
   luksDump) cat "$CASE/metadata" ;;
@@ -31,10 +33,17 @@ printf '%064d' 0 >"$tmp/boot/omarchy/luks-key"
 run() {
   CASE=$tmp PATH="$tmp/bin:$PATH" BOOT_MNT=$tmp/boot ROOT_DEV=/dev/test-root \
     OMARCHY_MAC_ENCRYPT_PROGRESS_FILE=$tmp/progress OMARCHY_MAC_ENCRYPT_FAILED_FILE=$tmp/failed \
-    bash -euo pipefail -c 'source "$1"; omarchy_mac_encrypt_reencrypt resume' bash "$SCRIPT" >"$tmp/out" 2>&1
+    bash -euo pipefail -c '
+      source "$1"
+      if [[ -e $CASE/stale-temp ]]; then
+        printf partial >"$BOOT_MNT/omarchy/luks-header-before-repair.tmp.$$"
+      fi
+      omarchy_mac_encrypt_reencrypt resume
+    ' bash "$SCRIPT" >"$tmp/out" 2>&1
 }
 reset_case() {
   rm -f "$tmp/calls" "$tmp/wrong-key" "$tmp/repair-fails" "$tmp/reencrypt-fails" "$tmp/failed" "$tmp/boot/omarchy/luks-header-before-repair"
+  rm -f "$tmp/stale-temp" "$tmp/backup-fails" "$tmp"/boot/omarchy/luks-header-before-repair.tmp.*
 }
 printf '%s\n' '{"keyslots":{"1":{"type":"reencrypt"}},"segments":{}}' >"$tmp/metadata"
 run || fail "pending conversion repairs before resuming"
@@ -46,6 +55,20 @@ grep -q 'LUKS2 resume exited status=0' "$tmp/boot/omarchy/encrypt.log" || fail "
 : >"$tmp/calls"
 run || fail "repeated resume preserves the original header evidence"
 ! grep -qx luksHeaderBackup "$tmp/calls" || fail "existing header evidence must not be overwritten"
+reset_case
+: >"$tmp/stale-temp"
+run || fail "a reused staging path must not block recovery"
+[[ $(cat "$tmp/boot/omarchy/luks-header-before-repair") == original-header ]] || fail "stale staging data is replaced by the full backup"
+reset_case
+: >"$tmp/backup-fails"
+if run; then fail "a partial header backup must stop recovery"; fi
+! grep -qx repair "$tmp/calls" || fail "repair must not run after a partial backup"
+[[ ! -e $tmp/boot/omarchy/luks-header-before-repair ]] || fail "partial backup is never published"
+compgen -G "$tmp/boot/omarchy/luks-header-before-repair.tmp.*" >/dev/null || fail "partial backup retained until cleanup"
+rm "$tmp/backup-fails"
+run || fail "recovery retries after an interrupted backup"
+BOOT_MNT=$tmp/boot bash -euo pipefail -c 'source "$1"; omarchy_mac_encrypt_remove_recovery_backup' bash "$SCRIPT"
+! compgen -G "$tmp/boot/omarchy/luks-header-before-repair*" >/dev/null || fail "completion removes all temporary backups"
 reset_case
 printf '%s\n' '{"keyslots":{"0":{"type":"luks2"}},"segments":{"0":{"type":"crypt"}}}' >"$tmp/metadata"
 run || fail "completed conversion with stale journal finishes"
@@ -74,6 +97,21 @@ mv "$tmp/boot/omarchy/encrypt.log" "$tmp/diagnostics.saved"
 ln -s /dev/full "$tmp/boot/omarchy/encrypt.log"
 run || fail "unavailable diagnostic storage must not stop conversion"
 [[ -L $tmp/boot/omarchy/encrypt.log ]] || fail "logger must not replace an existing symlink"
+printf untouched >"$tmp/unrelated"
+ln -s "$tmp/unrelated" "$tmp/boot/omarchy/luks-header-before-repair.tmp.symlink"
+printf obsolete >"$tmp/boot/omarchy/luks-header-before-repair.tmp.other-pid"
 BOOT_MNT=$tmp/boot bash -euo pipefail -c 'source "$1"; omarchy_mac_encrypt_remove_recovery_backup' bash "$SCRIPT"
 [[ ! -e $tmp/boot/omarchy/luks-header-before-repair ]] || fail "durable completion removes obsolete header evidence"
+! compgen -G "$tmp/boot/omarchy/luks-header-before-repair*" >/dev/null || fail "all header staging copies are removed"
+[[ $(cat "$tmp/unrelated") == untouched ]] || fail "cleanup must not follow a staging symlink"
+CASE=$tmp BOOT_MNT=$tmp/boot ROOT_DEV=/dev/test-root \
+  OMARCHY_MAC_ENCRYPT_FAILED_FILE=$tmp/failed bash -euo pipefail -c '
+  source "$1"
+  STATE_PHASE=reencrypting
+  omarchy_mac_encrypt_inconsistent "manual recovery test"
+' bash "$SCRIPT" >"$tmp/hint" 2>&1 && fail "inconsistent state must stop"
+grep -q 'Verify key: cryptsetup open --test-passphrase' "$tmp/hint" || fail "repair hint authenticates first"
+grep -q 'Repair: cryptsetup repair' "$tmp/hint" || fail "repair hint includes recovery"
+grep -q 'Then resume: cryptsetup reencrypt --resume-only' "$tmp/hint" || fail "repair hint resumes only after repair"
+grep -q '\.tmp.\* staging copies' "$tmp/hint" || fail "repair hint identifies temporary backup evidence"
 echo 'ok - interrupted LUKS2 recovery authenticates, preserves metadata, repairs, and distinguishes completed conversion'

@@ -43,7 +43,7 @@ grep -Fxq 'StandardOutput=kmsg' "$UNIT" && grep -Fxq 'StandardError=kmsg' "$UNIT
   fail "the initrd unit logs to the journal and kmsg (serial harness), never the console"
 grep -Fxq 'After=plymouth-start.service' "$UNIT" ||
   fail "the initrd unit starts once the splash it reports progress on is up"
-for binary in chroot grep mv cat mkdir chmod readlink stat sync date sleep; do
+for binary in chroot grep mv cat mkdir chmod readlink stat sync date sleep rm shred; do
   grep -Eq "\b$binary\b" "$INSTALL" || fail "the install hook adds $binary (busybox is not guaranteed)"
 done
 ! grep -Eq 'blockdev|dmsetup' "$INSTALL" || fail "the install hook adds nothing the script does not run"

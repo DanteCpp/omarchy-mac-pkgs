@@ -261,7 +261,16 @@ rm -f "$request"
 cp "$esp/limine.conf" "$test_tmp/keyed-menu"
 OMARCHY_IMAGE_BOOT_REBUILD="$request" OMARCHY_GRUB_PROBE=omarchy-test-absent-grub-probe run || fail "the leaf reruns on a keyed menu"
 cmp -s "$esp/limine.conf" "$test_tmp/keyed-menu" || fail "a keyed menu is not keyed again" "$(cat "$esp/limine.conf")"
+[[ $(grep -c '^comment: machine-id=' "$esp/limine.conf") == 1 ]] || fail "a second run leaves one identity line" "$(cat "$esp/limine.conf")"
 pass "a menu keyed to this Mac is not keyed again"
+
+# An identity-less menu whose entry is not Omarchy's gets no identity line.
+rm -f "$request"
+sed 's|^/+Omarchy$|/+Renamed|' "$test_tmp/image-menu" >"$esp/limine.conf"
+cp "$esp/limine.conf" "$test_tmp/renamed-menu"
+OMARCHY_IMAGE_BOOT_REBUILD="$request" OMARCHY_GRUB_PROBE=omarchy-test-absent-grub-probe run || fail "the leaf runs on a menu without an Omarchy entry"
+! grep -q '^comment: machine-id=' "$esp/limine.conf" || fail "only the Omarchy entry is keyed" "$(cat "$esp/limine.conf")"
+pass "a menu without an Omarchy entry is not keyed"
 
 # Without a machine identity yet there is nothing to key the entry to.
 rm -f "$request"
